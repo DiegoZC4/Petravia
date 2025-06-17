@@ -1,0 +1,659 @@
+<!DOCTYPE html> <html lang="en"> 
+  <head><meta charset="UTF-8"> 
+    <title>Tak</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪨</text></svg>">
+  </head>
+<body>
+  <!-- <details open="true"> -->
+  <details id="settingsContainer">
+    <summary>Settings (s)</summary><br>
+
+    <div id="boardSize"></div>
+    <button id="newGame" onclick="newGame()">New Game (r)</button>
+    <br><br>
+
+    <button onclick="jumpHistory(-1)">Undo (z)</button>
+    <button onclick="jumpHistory(1)">Redo (v)</button>
+    <br><br>
+    
+    <div id="colors"></div>
+    <button onclick="localStorage.clear();window.location.reload();">Reset to Defaults</button>
+    <br><br>
+
+    <label>TPS</label>
+    <br>
+    <input id="tps" type="text" size="40" oninput="displayTPS(true)" value="x,x,x/x,x,x/x,x,x 1 1"/>
+    <br><br>
+
+    <details id="historyContainer">
+      <summary>History (h)</summary>
+      <ol id="history"></ol>
+    </details>
+    <br>
+  </details>
+  <br>
+  <svg id="canvas" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
+
+<style>
+  :root{
+    --board-fill:#edd6b0;
+    --board-stroke:#b88762;
+    --player1:#f9f9f9;
+    --player2:#5c5957;
+    --valid:#2e3d5b;
+    --hover:#829aba;
+  }
+
+  #canvas{
+    /* border: thick solid; */
+    display: block; 
+    margin: 0 auto; 
+    stroke-linejoin: round;
+  }
+
+  .board{
+    fill:var(--board-fill);
+    stroke:var(--board-stroke);
+  }
+
+  button{background-color:var(--board-fill);}
+  button:active{background-color:var(--board-stroke);}
+
+  .player1{ fill:var(--player1)}
+  .player2{ fill:var(--player2)}
+
+  svg text{
+    font-size: 0.5px;
+    stroke:none;
+    dominant-baseline:middle;
+    text-anchor:middle;
+    text-shadow: white 0px 0px 10px;
+    user-select: none;
+  }
+</style>
+<script>
+
+// helper functions
+function svg(tagName, attrs, textContent) {
+  var el = document.createElementNS('http://www.w3.org/2000/svg', tagName);
+  for (var key in attrs) el.setAttribute(key, attrs[key]);
+  if (textContent) el.textContent = textContent;
+  return el;
+}
+
+class NumSlider {
+  constructor(min, max, start, units, step=1, sliderLength=200, numberWidth=50) {
+    this.min = min
+    this.max = max
+
+    let slider = document.createElement('input')
+    slider.type = 'range'
+    slider.min = min
+    slider.max = max
+    slider.step = step
+    slider.value = start
+    slider.style.width = sliderLength
+    this.slider = slider
+    this.slider.addEventListener('input', () => this.num.value = this.slider.value)
+    
+    let num = document.createElement('input')
+    num.type = 'number'
+    num.value = start
+    num.min = min
+    num.max = max
+    num.step = step
+    num.style.textAlign = 'right'
+    num.style.width = numberWidth
+    this.num = num
+    this.num.addEventListener('input', () => {
+      let value = Math.min(Math.max(Number(this.num.value) || min, min), max)
+      this.num.value = value
+      this.slider.value = value
+    })
+
+    let label = document.createElement('label')
+    label.append(this.slider)
+    label.append(this.num)
+    label.append(document.createTextNode(' ' + units))
+    label.append(document.createElement('br'))
+    this.label = label
+
+    document.getElementById('boardSize').append(this.label)
+  }
+  value() {return parseInt(this.slider.value)}
+  on(event, func) {
+    this.slider.addEventListener(event,func)
+    this.num.addEventListener(event,func)
+  }
+}
+
+class Square{
+  constructor(s,carryLimit,margin=.1){
+    const group = svg('g',{
+      stroke:'black',
+      'stroke-width':.02,
+    })
+    this.group = group
+    this.carryLimit = carryLimit
+    this.margin = margin
+    this.setByString(s)
+
+    this.text = svg('text',{x:0.5,y:0.55,})
+    this.group.append(this.text)
+
+    this.unhoverable()
+    this.on('mouseover',()=>this.bg.style.setProperty('fill', this.hoverOn))
+    this.on('mouseout',()=>this.bg.style.setProperty('fill', this.hoverOff))
+    this.on('mousedown',()=>this.click())
+  }
+  on(eventType, func){this.group.addEventListener(eventType, func)}
+
+  setByString(s){
+    this.empty = s.includes('x') || !s
+    this.s = this.empty ? 'x': s
+    const {group, carryLimit, margin} = this
+    group.innerHTML = ''
+    this.bg = svg('rect',{class:'board',width:1,height:1})
+    group.append(this.bg)
+    
+    if (this.empty) this.group.append(this.text)
+
+    const stack = svg('g',{transform:`translate(${margin},${margin}) scale(${(1-margin*2)})`})
+
+    const stackString = s.replace(/([12])([SCsc])/g, (_, num, char) => {
+      return num === '1' ? char.toUpperCase() : char.toLowerCase();
+    }).split("").reverse();
+    
+    const unitW = 1/(1+ceil(stackString.length/carryLimit))
+    const unitH = 1/min(carryLimit,stackString.length)
+
+    stackString.forEach((char,i)=>{
+      const player = '12'.includes(char) ? char :
+      char==char.toUpperCase() ? '1': '2'
+
+      let shape;
+
+      if ('Ss'.includes(char))
+        shape = svg('path',{ d:`M0,${unitH} h${unitW*2} v${-unitH} z`})
+      if ('Cc'.includes(char))
+        shape = svg('circle',{r:min(unitH/2,unitW), cx:unitW, cy:unitH/2})
+      if ('12'.includes(char))
+        shape = svg('rect',{
+          x:floor(i/carryLimit)*unitW + (i < carryLimit ? 0: unitW),
+          y:(i%carryLimit)*unitH,
+          width: i < carryLimit ? unitW*2: unitW,
+          height:unitH})
+      if (shape){
+        shape.setAttribute('class',`player${player}`)
+        stack.append(shape)
+      }
+      if (i==0) this.top = parseInt(player)
+    })
+    group.append(stack)
+  }
+
+  move(x,y){
+    this.x = x
+    this.y = y
+    this.group.setAttribute('transform',`translate(${x},${y})`)
+  }
+  hoverable(click){
+    this.hoverOn = 'var(--hover)'
+    this.click = click?click:()=>{}
+  }
+  valid(click){
+    this.bg.style.setProperty('fill', 'var(--valid)')
+    this.hoverOff = 'var(--valid)'
+
+    this.hoverable(click)
+  }
+  unhoverable(){
+    this.bg.style.setProperty('fill', 'var(--board-fill)')
+    this.hoverOff = 'var(--board-fill)'
+    
+    this.hoverOn = this.hoverOff
+    this.click = ()=>{}
+  }
+  grabTop(other){
+    const grabSize = this.carryLimit+(/[SC]$/.test(other.s)?1:0)
+    this.setByString(other.s.slice(-grabSize))
+    other.setByString(other.s.slice(0,-grabSize))
+  }
+  dropOne(other){
+    const old = other.empty?'':other.s
+    if (this.s.length==2 && /[SC]$/.test(this.s)){
+      if (other.s.endsWith('S')) other.setByString(old.slice(0,-1)+this.s)
+      else other.setByString(old+this.s)
+      this.setByString('x')
+      return
+    }
+    other.setByString(old+this.s.slice(0,1))
+    this.setByString(this.s.slice(1))
+  }
+  key(){return `${this.x},${this.y}`}
+}
+
+class Player{
+  constructor(idx, carryLimit, board, vertical=true){
+    this.group = svg('g')
+    this.active = svg('rect',{width:vertical?3:1,height:vertical?1:3, 'stroke-width':'.1'})
+    this.group.append(this.active)
+
+    this.board = board
+    this.idx = idx
+    this.carryLimit = carryLimit
+    this.controls = ['x',`${idx}${saveStanding[idx]?'S':''}`,`${idx}C`].map((s,i)=>{
+      const square = new Square(s,carryLimit)
+      square.move(vertical?i:0,vertical?0:i)
+      this.group.append(square.group)
+      return square
+    })
+
+    this.controls[0].text.innerHTML = '✋🏻'
+    this.controls[0].text.style.textShadow = 'black 0px 0px 10px'
+
+    this.stonesLeft = stoneMax[this.carryLimit]-this.board.squares.reduce((sum,sq)=>sum + sq.s.split(this.idx).length - 1 - sq.s.includes(`${this.idx}C`),0)
+    this.controls[1].text.innerHTML = this.stonesLeft
+    
+    this.capsLeft = capMax[this.carryLimit]-this.board.squares.reduce((sum,sq)=>sum + sq.s.includes(`${this.idx}C`),0)
+    this.controls[2].text.innerHTML = this.capsLeft
+    
+    const opacity = 0.7
+    if (!this.stonesLeft) this.controls[1].group.style.opacity = opacity
+    if (!this.capsLeft) this.controls[2].group.style.opacity = opacity
+  }
+  move(x,y){this.group.setAttribute('transform',`translate(${x},${y})`)}
+  selectControl(i){
+    if (!this.capsLeft && i==2) {this.selectControl(1);return}
+    if (!this.stonesLeft && i==1) {this.selectControl(0);return}
+
+    this.board.reset()
+    
+    this.controls[0].setByString('x')
+
+    this.controls[i].valid(()=>{})
+    saveControl[this.idx] = i
+    if (i>0){
+      this.board.showPlaceable(['',saveStanding[this.idx]?'S':'','C'][i])
+    } else {this.board.showGrabbable(this)}
+
+    if (this.board.moveNum==1) return
+    
+    this.controls[0].hoverable(()=>{
+      saveControl[this.idx]=0
+      displayTPS()
+    })
+
+    if (this.stonesLeft){
+      this.controls[1].hoverable(()=>{
+        if (saveControl[this.idx]==1) saveStanding[this.idx] = !saveStanding[this.idx]
+        saveControl[this.idx]=1
+        displayTPS()
+      })
+    }
+
+    if (this.capsLeft){
+      this.controls[2].hoverable(()=>{
+        saveControl[this.idx]=2
+        displayTPS()
+      })
+    }
+  }
+}
+
+class Board{
+  constructor(strings, carryLimit, toMove, moveNum){
+    this.strings = strings
+    this.group = svg('g')
+    this.squares = []
+    this.coords = {}
+    this.strings.forEach((row,i)=>row.forEach((s,j)=>{
+      this.add(s,carryLimit,i,j)
+    }))
+    this.toMove = toMove
+    this.moveNum = moveNum
+    this.carryLimit = carryLimit
+  }
+  reset(){
+    this.strings.forEach((row,i)=>row.forEach((s,j)=>{
+      this.coords[[j,i]].setByString(s)
+    }))
+  }
+  move(x,y){this.group.setAttribute('transform',`translate(${x},${y})`)}
+  add(s,n,i,j){
+    const square = new Square(s,n)
+    square.move(j,i)
+    this.squares.push(square)
+    this.coords[[j,i]] = square
+    this.group.append(square.group)
+  }
+  clearHighlights(){
+    this.squares.forEach((square)=>{square.unhoverable()})
+  }
+  showPlaceable(pieceType){
+    this.clearHighlights()
+    this.squares.forEach(square=>{
+      if (!square.empty) return
+      square.valid(()=>{
+        const pieceColor = this.moveNum==1?this.toMove%2+1:this.toMove
+        this.strings[square.y][square.x] = `${pieceColor}${pieceType}`
+        this.finishMove()
+      })
+    })
+  }
+  showGrabbable(player){
+    this.clearHighlights()
+    this.squares.forEach(square=>{
+      if (square.empty || square.top != player.idx) return
+      square.valid(()=>{
+        this.startGrab = square
+        player.controls[0].grabTop(square)
+        this.showNeighbors(player, square, [[1,0],[0,1],[-1,0],[0,-1]])
+      })
+    })
+  }
+  showNeighbors(player, square, neighbors){
+    this.clearHighlights()
+    const [x,y] = [square.x, square.y]
+    if (!neighbors.some(([x, y]) => x==0 && y==0)) neighbors.push([0, 0])
+
+    neighbors.forEach(([dx,dy])=>{
+      const neighbor = this.coords[[x+dx,y+dy]]
+      if (!neighbor) return 
+      if ('C' == neighbor.s.slice(-1)) return
+      if (neighbor.s.slice(-1)=='S' && player.controls[0].s != `${player.idx}C`) return
+
+      neighbor.valid(()=>{
+        player.controls[0].dropOne(neighbor)
+        if (!player.controls[0].empty){
+          this.showNeighbors(player, neighbor, (dx==0&&dy==0)?neighbors:[[dx,dy]])
+          return
+        }
+        if (this.startGrab == neighbor){
+          displayTPS()
+          return
+        }
+        this.strings = this.strings.map((row,i)=>row.map((_,j)=>this.coords[[j,i]].s))
+        this.finishMove()
+      })
+    })
+  }
+
+  finishMove(){
+    if (this.toMove == 2) this.moveNum += 1
+    this.toMove = this.toMove%2 + 1
+    tps.value = this.strings.map(row=>row.join(',')).join('/') + 
+    ` ${this.toMove} ${this.moveNum}`
+    displayTPS(false,true)
+  }
+
+  setPlayers(p1,p2){
+    this.p1 = p1
+    this.p2 = p2
+    const mover = this.toMove == 1 ? p1: p2
+    const opp = this.toMove == 2 ? p1: p2
+
+    const [road1,road2] = [this.checkRoad(1),this.checkRoad(2)]
+    if (road1 || road2){
+      const winRoad = road1 && road2 ? 
+      [0,road1,road2][this.toMove%2+1] :
+      (road1 ? road1 : road2)
+      winRoad.forEach(sq=>sq.valid())
+      return
+    }
+
+    const flatWin = this.checkFlatWin()
+    if (flatWin){
+      flatWin.forEach(sq=>sq.valid())
+      return
+    }
+    
+    mover.active.setAttribute('stroke','black')
+    if (this.moveNum == 1){
+      opp.selectControl(1)
+      return
+    }
+    mover.selectControl(saveControl[this.toMove])
+    this.mover = mover
+  }
+
+  checkFlatWin(){
+    if (this.squares.some(square=>square.empty) && 
+    this.p1.stonesLeft+this.p1.capsLeft > 0 &&
+    this.p2.stonesLeft+this.p2.capsLeft > 0) return null
+    
+    const [flat1,flat2] = [this.countFlat(1),this.countFlat(2)]
+    return flat1.length==flat2.length ?
+    flat1.concat(flat2) :
+    (flat1.length > flat2.length ? flat1 : flat2)
+  }
+  countFlat(i){return this.squares.filter(sq=>sq.s.endsWith(`${i}`))}
+
+  checkRoad(i){
+    const conductive = (sq) => sq && (sq.s.endsWith(`${i}`) || sq.s.endsWith(`${i}C`))
+    
+    const horizontal = this.bfs(this.squares.filter(sq=>sq.x==0 && conductive(sq)), 
+    square=>square.x==this.carryLimit-1,
+    conductive)
+    
+    
+    const vertical = this.bfs(this.squares.filter(sq=>sq.y==0 && conductive(sq)), 
+    square=>square.y==this.carryLimit-1,
+    conductive)
+
+    
+    if (horizontal && vertical) {
+      return horizontal.length <= vertical.length ? horizontal : vertical
+    }
+    return horizontal || vertical
+  }
+
+  bfs(queue, mustBreak, conductive){
+    const visited = new Set(queue.map(s=>s.key()))
+    const parent = {}
+    while (queue.length){
+      const square = queue.shift()
+
+      if (mustBreak(square)) {
+        const path = [square]
+        let retrace = square
+        while (parent[retrace.key()]){
+          retrace = parent[retrace.key()]
+          path.push(retrace)
+        }
+        return path
+      }
+
+      ;[[1,0],[0,1],[-1,0],[0,-1]].forEach(([dx,dy])=>{
+        const neighbor = this.coords[[square.x+dx,square.y+dy]]
+        if (neighbor && !visited.has(neighbor.key()) && conductive(neighbor)) {
+          queue.push(neighbor)
+          parent[neighbor.key()] = square
+          visited.add(neighbor.key())
+        }
+      })
+    }
+    return null
+  }
+}
+
+const { min, max, ceil, floor} = Math;
+const stoneMax = {3:10,4:15,5:21,6:30,7:40,8:50}
+const capMax = {3:0,4:0,5:1,6:1,7:2,8:2}
+
+// init UI
+const canvas = document.getElementById('canvas')
+const colorContainer = document.getElementById('colors');
+
+;[['--board-fill', 'Board'],
+  ['--board-stroke', 'Grid'],
+  ['--player1', 'Player 1'],
+  ['--player2', 'Player 2'],
+  ['--valid', 'Valid Moves'],
+  ['--hover', 'Hover']
+].map(([cssVar, labelText])=>{
+  const input = document.createElement('input');
+  input.type = 'color';
+  
+  const saved = localStorage.getItem(cssVar);
+  input.value = saved || window.getComputedStyle(document.body).getPropertyValue(cssVar);
+  document.documentElement.style.setProperty(cssVar, input.value)
+
+  input.oninput = () => {
+    document.documentElement.style.setProperty(cssVar, input.value)
+    localStorage.setItem(cssVar, input.value);
+  }
+
+  const label = document.createElement('label');
+  label.textContent = ' '+labelText;
+
+  colorContainer.appendChild(input);
+  colorContainer.appendChild(label);
+  colorContainer.appendChild(document.createElement('br'));
+})
+
+const size = new NumSlider(3,8,5,'Board Size')
+
+window.addEventListener('resize', displayTPS, true);
+
+let board
+
+const history = []
+let historyIdx = 0
+
+const saveControl = [null,1,1]
+const saveStanding = [null,false,false]
+
+const tps = document.getElementById('tps')
+
+// TEST FLAT WIN
+// tps.value = '1,2,1/2,1,2/1,2,x 1 4'
+    
+// TEST ROAD WIN
+// tps.value = 'x,1,x/1,1,x/x,x,1 1 4'
+// tps.value = '1,1,x/111,x,222/x,2,2 2 4'
+
+// TEST FLATTEN STANDING STONE
+// tps.value = 'x4,1C/x4,2S/x5/x5/x5 1 4'
+
+// displayTPS()
+
+newGame()
+
+function displayTPS(clearHistory=false, addHistory=false){
+  if (clearHistory){
+    history.length = 0
+    history.push(tps.value)
+    historyIdx = 0
+  }
+  if (addHistory){
+    historyIdx +=1
+    history.length = historyIdx
+    history.push(tps.value)
+  }
+  const histList = document.getElementById('history')
+  histList.innerHTML = ''
+  history.forEach((h,i)=>{
+    const item = document.createElement('li')
+    item.textContent = h
+    if (i == historyIdx) {
+      item.style.fontWeight = 'bold'
+      item.style.background = '#eef'
+    }
+    item.addEventListener('click', () => {
+      historyIdx = i
+      displayTPS()
+    })
+    histList.append(item)
+  })
+
+  tps.value = history[historyIdx]
+
+  let [boardStrings, toMove, moveNum] = tps.value.split(' ')
+  toMove = parseInt(toMove)
+  moveNum = parseInt(moveNum)
+  boardStrings = boardStrings.split('/').map(
+    row => row.split(',').map(s=>
+      s.length>1 && s.charAt(0)=='x' ? 
+      Array(parseInt(s.slice(1))).fill('x') :
+      [s]
+    ).flat()
+  )
+  const [w,h] = [max(...boardStrings.map(row=>row.length)),boardStrings.length]
+
+  canvas.innerHTML = ''
+
+  const n = max(w,h)
+  const MARGIN = 0.1;
+  const [short,long] = [n+.5,n+3];
+
+  // ❶  Which orientation lets squares be larger?
+  const vUnit = Math.min(innerWidth / short,  innerHeight / long);   // short × (n+3)
+  const hUnit = Math.min(innerWidth / long,   innerHeight / short);  // (n+3) × n
+  const vertical = vUnit > hUnit;
+
+  // ❷  Logical size of the <svg> viewBox
+  const [viewW, viewH] = vertical ? [short, long] : [long, short];
+  canvas.setAttribute('viewBox', `0 0 ${viewW} ${viewH}`);
+
+  // ❸  Draw size on screen (90 % of the limiting window dimension)
+  const scale = 
+  (1 - MARGIN) * 
+  min(innerHeight/viewH, innerWidth/viewW);
+  canvas.style.width  = `${scale * viewW}px`;
+  canvas.style.height = `${scale * viewH}px`;
+
+  board = new Board(boardStrings, n, toMove, moveNum)
+  board.move(vertical?0:1.5,vertical?1.5:0)
+
+
+  const playerOffset = 0.1
+  const p1 = new Player(1,n,board,vertical)
+  p1.move(vertical?(n-3)/2:playerOffset,vertical?playerOffset:(n-3)/2)
+
+  const p2 = new Player(2,n,board,vertical)
+  p2.move(vertical?(n-3)/2:n+2-playerOffset,vertical?n+2-playerOffset:(n-3)/2)
+
+  board.setPlayers(p1,p2)
+
+  const invsAndBoard = svg('g',{transform:`translate(${vertical?(short-n)/2:0},${vertical?0:(short-n)/2})`})
+  invsAndBoard.append(p1.group)
+  invsAndBoard.append(p2.group)
+  invsAndBoard.append(board.group)
+  canvas.append(invsAndBoard)
+}
+
+function newGame(){
+  const n = size.value()
+  tps.value = Array(n).fill(`x${n}`).join('/') + ' 1 1'
+  saveControl[1] = 1
+  saveControl[2] = 1
+
+  displayTPS(clearHistory=true)
+}
+
+const settCont = document.getElementById('settingsContainer')
+const histCont = document.getElementById('historyContainer')
+
+document.onkeydown = function (e) {
+  e = e || window.event
+  const key = e.key
+  if ('123'.includes(key)){
+    const tool = parseInt(key)-1
+    if (saveControl[board.toMove]==1 && tool==1 && board.moveNum>1) saveStanding[board.toMove] = !saveStanding[board.toMove]
+    saveControl[board.toMove] = tool
+    displayTPS()
+  }
+  if (key=='z') jumpHistory(-1)
+  if (key=='v') jumpHistory(1)
+  if (key=='n') newGame()
+  if (key=='s') settCont.open = !settCont.open
+  if (key=='h') histCont.open = !histCont.open
+}
+
+function jumpHistory(i){
+  const newIdx = historyIdx+i
+  historyIdx = newIdx >= 0 && newIdx < history.length ? newIdx: historyIdx
+  displayTPS()
+}
+</script></body></html>
