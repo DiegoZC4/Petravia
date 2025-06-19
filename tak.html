@@ -23,13 +23,27 @@
     <label>TPS</label>
     <br>
     <input id="tps" type="text" size="40" oninput="displayTPS(true)" value="x,x,x/x,x,x/x,x,x 1 1"/>
-    <br><br>
-
-    <details id="historyContainer">
-      <summary>History (h)</summary>
-      <ol id="history"></ol>
-    </details>
-    <br>
+  </details>
+  <br>
+  <details id="historyContainer">
+    <summary>History (h)</summary>
+    <p>Starting Position</p>
+    <div id="start"></div>
+    <p>PTN</p>
+    <table>
+      <thead>
+        <tr>
+          <th rowspan="2">Move</th>
+          <th colspan="2">Players</th>
+        </tr>
+        <tr>
+          <th>1</th>
+          <th>2</th>
+        </tr>
+      </thead>
+      <tbody id="ptn"></tbody>
+    </table>
+    <button id="copy">Copy PTN 📋</button>
   </details>
   <br>
   <svg id="canvas" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
@@ -70,6 +84,20 @@
     text-shadow: white 0px 0px 10px;
     user-select: none;
   }
+
+  summary {font-weight: bold;}
+
+  table, th {
+    border-collapse: collapse;
+    border: 2px solid black;
+    padding: 4px;
+  }
+
+  td {
+    border: 1px solid black;
+    padding: 4px;
+    text-align: center;
+  }
 </style>
 <script>
 
@@ -106,7 +134,7 @@ class NumSlider {
     num.style.width = numberWidth
     this.num = num
     this.num.addEventListener('input', () => {
-      let value = Math.min(Math.max(Number(this.num.value) || min, min), max)
+      let value = min(max(Number(this.num.value) || min, min), max)
       this.num.value = value
       this.slider.value = value
     })
@@ -477,7 +505,7 @@ class Board{
   }
 }
 
-const { min, max, ceil, floor} = Math;
+const { min, max, ceil, floor, hypot} = Math;
 const stoneMax = {3:10,4:15,5:21,6:30,7:40,8:50}
 const capMax = {3:0,4:0,5:1,6:1,7:2,8:2}
 
@@ -514,7 +542,7 @@ const colorContainer = document.getElementById('colors');
 
 const size = new NumSlider(3,8,5,'Board Size')
 
-window.addEventListener('resize', displayTPS, true);
+window.addEventListener('resize', ()=>displayTPS(), true);
 
 let board
 
@@ -551,34 +579,15 @@ function displayTPS(clearHistory=false, addHistory=false){
     history.length = historyIdx
     history.push(tps.value)
   }
-  const histList = document.getElementById('history')
-  histList.innerHTML = ''
-  history.forEach((h,i)=>{
-    const item = document.createElement('li')
-    item.textContent = h
-    if (i == historyIdx) {
-      item.style.fontWeight = 'bold'
-      item.style.background = '#eef'
-    }
-    item.addEventListener('click', () => {
-      historyIdx = i
-      displayTPS()
-    })
-    histList.append(item)
-  })
+  displayHistory()
 
   tps.value = history[historyIdx]
 
-  let [boardStrings, toMove, moveNum] = tps.value.split(' ')
+  let [_, toMove, moveNum] = tps.value.split(' ')
   toMove = parseInt(toMove)
   moveNum = parseInt(moveNum)
-  boardStrings = boardStrings.split('/').map(
-    row => row.split(',').map(s=>
-      s.length>1 && s.charAt(0)=='x' ? 
-      Array(parseInt(s.slice(1))).fill('x') :
-      [s]
-    ).flat()
-  )
+
+  const boardStrings = tpsToBoardStrings(tps.value)
   const [w,h] = [max(...boardStrings.map(row=>row.length)),boardStrings.length]
 
   canvas.innerHTML = ''
@@ -588,8 +597,8 @@ function displayTPS(clearHistory=false, addHistory=false){
   const [short,long] = [n+.5,n+3];
 
   // ❶  Which orientation lets squares be larger?
-  const vUnit = Math.min(innerWidth / short,  innerHeight / long);   // short × (n+3)
-  const hUnit = Math.min(innerWidth / long,   innerHeight / short);  // (n+3) × n
+  const vUnit = min(innerWidth / short,  innerHeight / long);   // short × (n+3)
+  const hUnit = min(innerWidth / long,   innerHeight / short);  // (n+3) × n
   const vertical = vUnit > hUnit;
 
   // ❷  Logical size of the <svg> viewBox
@@ -605,7 +614,6 @@ function displayTPS(clearHistory=false, addHistory=false){
 
   board = new Board(boardStrings, n, toMove, moveNum)
   board.move(vertical?0:1.5,vertical?1.5:0)
-
 
   const playerOffset = 0.1
   const p1 = new Player(1,n,board,vertical)
@@ -634,6 +642,8 @@ function newGame(){
 
 const settCont = document.getElementById('settingsContainer')
 const histCont = document.getElementById('historyContainer')
+settCont.open = true
+histCont.open = true
 
 document.onkeydown = function (e) {
   e = e || window.event
@@ -651,9 +661,106 @@ document.onkeydown = function (e) {
   if (key=='h') histCont.open = !histCont.open
 }
 
-function jumpHistory(i){
-  const newIdx = historyIdx+i
+function jumpHistory(increment, set){
+  const newIdx = set!==undefined?set:historyIdx+increment
   historyIdx = newIdx >= 0 && newIdx < history.length ? newIdx: historyIdx
   displayTPS()
 }
-</script></body></html>
+
+function tpsToBoardStrings(s){
+  return s.split(' ')[0].split('/').map(
+    row => row.split(',').map(s=>
+      s.length>1 && s.charAt(0)=='x' ? 
+      Array(parseInt(s.slice(1))).fill('x') :
+      [s]
+    ).flat()
+  )
+}
+
+function directionSymbol(rowColA, rowColB){
+  if (rowColA[0]<rowColB[0]) return '-'
+  if (rowColA[0]>rowColB[0]) return '+'
+  if (rowColA[1]<rowColB[1]) return '>'
+  if (rowColA[1]>rowColB[1]) return '<'
+}
+
+function inferPTN(a,b){
+  const stackHeights = (str)=>tpsToBoardStrings(str).map(row=>row.map(s=>{
+    if (s=='x') return 0
+    return s.length - 'SC'.includes(s.slice(-1))
+  }))
+  const [A,B] = [stackHeights(a),stackHeights(b)]
+  const diff = []
+  A.forEach((row,i)=>row.forEach((s,j)=>{
+    if (s != B[i][j]) diff.push([i,j,B[i][j]-s])
+  }))
+  const algebraic = (y,x)=> `${'abcdefgh'.charAt(x)}${A.length-y}`
+
+  if (diff.length==1){
+    const [y,x,_] = diff[0]
+    const placed = B[y][x]
+    return (placed.length>1?placed[1]:'')+algebraic(y,x)
+  }
+  const pickUp = diff.reduce((pick,d)=>d[2]<0?d:pick,null)
+  diff.sort((a,b)=>
+    hypot(pickUp[0]-a[0],pickUp[1]-a[1])-
+    hypot(pickUp[0]-b[0],pickUp[1]-b[1])
+  )
+  const drops = diff.slice(1).map(d=>d[2])
+  const dir = diff[1][0]
+  return `${drops.reduce((sum,d)=>sum+d,0)}${algebraic(pickUp[0],pickUp[1])}${directionSymbol(diff[0],diff[1])}${drops.join('')}`
+}
+
+function displayHistory(){
+  const startPos = document.getElementById('start')
+  startPos.innerHTML = ''
+  const newStart = document.createElement('p')
+  newStart.textContent = history[0]
+  newStart.addEventListener('click',()=>jumpHistory(0,0))
+  if (historyIdx == 0) newStart.style.fontWeight = 'bold'
+  startPos.append(newStart)
+
+  const histList = document.getElementById('ptn')
+  histList.innerHTML = ''
+
+  const ptn = history.reduce((acc,string,i)=>{
+    if (i==0) return acc
+    const move = inferPTN(history[i-1],string)
+    const toMove = history[i-1].split(' ')[1]
+    if (toMove=='1') acc.push([move])
+    if (toMove=='2'){
+      if (acc.length>0) acc[acc.length-1].push(move)
+      else acc.push(['',move])
+    }
+    return acc
+  },[])
+
+  let i = 0
+  ptn.forEach((pair,pIdx)=>{
+    const row = document.createElement('tr')
+    const moveNum = document.createElement('td')
+    moveNum.textContent = pIdx+1
+    row.append(moveNum)
+    pair.forEach(m=>{
+      if (!m) return
+      i+=1
+      const data = document.createElement('td')
+      data.textContent = m
+      const jumpTo = i
+      if (jumpTo == historyIdx) data.style.fontWeight = 'bold'
+      data.addEventListener('click', ()=>jumpHistory(0,jumpTo))
+      row.append(data)
+    })
+    histList.append(row)
+  })
+
+  const copy = document.getElementById('copy')
+  copy.onclick = ()=>{
+    navigator.clipboard.writeText(ptn.map((row,i)=>`${i+1}. ${row.join(' ')}`).join('\n'))
+    .then(() => console.log("PTN copied to clipboard!"))
+    .catch(err => console.error("Failed to copy:", err));
+  }
+}
+</script>
+</body>
+</html>

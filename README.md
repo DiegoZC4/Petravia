@@ -31,8 +31,6 @@ Stacks are drawn in column major order (starting from top left, going down the c
 
 Each column is the height of the carry limit, and the leftmost column is twice as wide as the others (representing the most stones you can grab).
 
-[TPS](https://ustak.org/tak-positional-system-tps/) is used to store history, rather than [PTN](https://ustak.org/portable-tak-notation/). TPS is more verbose, human readable, and puzzle friendly, imo.
-
 Maximum number of flat+standing stones and capstones set according to the [US Tak Association](https://ustak.org/play-beautiful-game-tak/), but the js can be edited for custom piece limits.
 
 `const stoneMax = {3:10,4:15,5:21,6:30,7:40,8:50}`
